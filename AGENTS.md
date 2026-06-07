@@ -179,7 +179,7 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
-## 12. Fork-Specific: HenkDz/paperclip
+## 12. Fork Notes (Historical)
 
 > **⚠️ Historical — verify against `master` before relying on this section.** Most of the original fork divergence has converged with upstream `paperclipai/paperclip`. The notes below are kept as a marker for contributors who may reintroduce fork-specific behavior.
 >
