@@ -62,6 +62,7 @@ import {
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { validateDoneEvidence } from "../lib/done-evidence.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
@@ -140,6 +141,7 @@ import {
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
+  evidence: z.unknown().optional(),
 });
 
 const promoteLowTrustOutputSchema = z.object({
@@ -4660,8 +4662,9 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      evidence,
       ...updateFields
-    } = req.body;
+    } = req.body as any;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
@@ -4859,6 +4862,18 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+
+    const willBecomeDone = existing.status !== "done" && (updateFields as any).status === "done";
+    if (willBecomeDone) {
+      const evidenceResult = validateDoneEvidence(
+        evidence,
+        { issueId: id, logger: (req as any).log ?? console }
+      );
+      if (evidenceResult.mode === 'enforce' && !evidenceResult.ok) {
+        return res.status(422).json({ error: 'done_evidence_invalid', reasons: evidenceResult.reasons });
+      }
+    }
+
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
