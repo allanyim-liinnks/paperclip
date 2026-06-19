@@ -62,7 +62,7 @@ import {
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
-import { validateDoneEvidence } from "../lib/done-evidence.js";
+import { validateDoneEvidence, verifyAttestation } from "../lib/done-evidence.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
@@ -4865,12 +4865,57 @@ export function issueRoutes(
 
     const willBecomeDone = existing.status !== "done" && (updateFields as any).status === "done";
     if (willBecomeDone) {
+      const evidenceObj = (evidence as Record<string, unknown> | null | undefined) ?? undefined;
+      const attestationId = evidenceObj && typeof evidenceObj['verifier_attestation_id'] === 'string'
+        ? (evidenceObj['verifier_attestation_id'] as string)
+        : undefined;
+
       const evidenceResult = validateDoneEvidence(
         evidence,
         { issueId: id, logger: (req as any).log ?? console }
       );
-      if (evidenceResult.mode === 'enforce' && !evidenceResult.ok) {
-        return res.status(422).json({ error: 'done_evidence_invalid', reasons: evidenceResult.reasons });
+
+      // P0-1: enforce mode requires attestation_id
+      if (evidenceResult.mode === 'enforce' && !attestationId) {
+        return res.status(422).json({
+          error: 'done_evidence_invalid',
+          reasons: ['verifier_attestation_id required in enforce mode'],
+        });
+      }
+
+      const attestationReasons: string[] = [];
+      if (attestationId) {
+        const attestationCheck = await verifyAttestation(attestationId, {
+          expectedVerifierAgentId: process.env.VERIFIER_AGENT_ID,
+          expectedIssueId: id,
+          expectedCommitSha: typeof evidenceObj?.['commit_sha'] === 'string' ? (evidenceObj['commit_sha'] as string) : undefined,
+          actualEvidence: {
+            commit_sha: typeof evidenceObj?.['commit_sha'] === 'string' ? (evidenceObj['commit_sha'] as string) : undefined,
+            output_files: Array.isArray(evidenceObj?.['output_files']) ? (evidenceObj['output_files'] as string[]) : undefined,
+            verification_command: typeof evidenceObj?.['verification_command'] === 'string' ? (evidenceObj['verification_command'] as string) : undefined,
+            verification_output: typeof evidenceObj?.['verification_output'] === 'string' ? (evidenceObj['verification_output'] as string) : undefined,
+          },
+          fetchComment: async (commentId: string) => {
+            const rows = await db.select({
+              id: issueComments.id,
+              authorAgentId: issueComments.authorAgentId,
+              body: issueComments.body,
+            }).from(issueComments).where(eq(issueComments.id, commentId)).limit(1);
+            return rows[0] ?? null;
+          },
+        });
+        if (!attestationCheck.ok) {
+          attestationReasons.push(...attestationCheck.reasons.map(r => `attestation: ${r}`));
+        }
+      }
+
+      if (evidenceResult.mode === 'enforce') {
+        const allReasons = [...evidenceResult.reasons, ...attestationReasons];
+        if (!evidenceResult.ok || attestationReasons.length > 0) {
+          return res.status(422).json({ error: 'done_evidence_invalid', reasons: allReasons });
+        }
+      } else if (attestationReasons.length > 0) {
+        ((req as any).log ?? console).warn?.('[done-evidence] dry-run attestation violations', { issueId: id, reasons: attestationReasons });
       }
     }
 
